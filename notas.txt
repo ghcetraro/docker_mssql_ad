@@ -1,0 +1,236 @@
+Lanzar contenedor
+
+-- sin limitar recursos
+
+docker run -dit -p1433:1433 --name sql01 -e 'ACCEPT_EULA=Y' -e 'SA_PASSWORD=12345678' -v /sys/fs/cgroup:/sys/fs/cgroup:ro -v /var/run:/var/run -v /data/compartido:/data/compartido centos_ad_sql:01
+
+-- limitando recursos
+
+docker run -dit -p1433:1433 --name sql01 --cpus 2 --memory 4048m --memory-swap 4048m --storage-opt size=100G -e 'ACCEPT_EULA=Y' -e 'SA_PASSWORD=12345678' -v /sys/fs/cgroup:/sys/fs/cgroup:ro -v /var/run:/var/run -v /data/compartido:/data/compartido centos_ad_sql_03:08
+
+//////////////////////////
+
+-- entrar al container e inicializar el sql, esperar hasta que termine y salir
+
+sqlservr
+
+--desactivar para evitar errores, ya que docker no lo utiliza
+systemctl disable network.service
+
+-- activar el servicio de sql
+
+systemctl enable sql.service ; systemctl daemon-reload ; systemctl start sql.service
+
+-- activar el sssd nativo
+
+systemctl enable sssd ; systemctl start sssd
+/////////////////////////////////////
+
+--salir y reiniciar container
+
+docker restart <nombre container>
+
+/////////////////////
+-- volver a entrar al container 
+-- verificar que haya lavantado el sql y el sssd, tarda 1 minuto en iniciar despues de un reset
+-- para sql
+netstat -tupane| grep 1433
+ps -aux| grep sql
+systemctl status sql
+
+-- para sssd
+systemctl status sssd
+ps -aux| grep sssd
+netstat -tupane| grep 389
+//////////////
+
+registrar el container de sql en ad
+realm join dominio -U 'usuario@dominio' -v
+
+-- verficiar que haya quedado asi
+
+[root@62afc719bb34 system]# cat /etc/sssd/sssd.conf
+
+[sssd]
+domains = dominio
+config_file_version = 2
+services = nss, pam
+
+[domain/dominio]
+ad_domain = dominio
+krb5_realm = dominio
+realmd_tags = manages-system joined-with-samba
+cache_credentials = false
+id_provider = ad
+krb5_store_password_if_offline = True
+default_shell = /bin/bash
+ldap_id_mapping = True
+use_fully_qualified_names = True
+fallback_homedir = /home/%u@%d
+access_provider = ad
+debug_level = 9
+dyndns_update = false
+
+--chequear conexion al ad que funcione
+id usuario@dominio
+
+*si da error, salir del container, reiniciarlo y volver a probar
+* si no funciona no esta levantando el servicio nativo de sssd
+
+--verificar errores
+systemctl status sssd
+--verificar errores
+sssd -d4 -i
+
+///////////
+
+--crear los spn en ad, desde una consola de windows con permisos de domain admin
+
+setspn -A MSSQLSvc/d6fde3e5b1de.dominio:1433 usuario
+setspn -A MSSQLSvc/d6fde3e5b1de:1433 usuario
+
+* usuario -- es la cuenta de servicio de AD dedicada a correr estos servicios
+
+--desde windows chequear spn, lo puede hacer cualquier
+setspn -L <ServerName>
+setspn -L 62afc719bb34
+
+setspn -L <domain\user>
+
+-- verificar que este comentado el siguiente paramente 
+
+#default_ccache_name = KEYRING:persistent:%{uid}
+
+en los siguientes archivos
+
+nano /etc/krb5.conf
+nano /var/lib/authconfig/last/krb5.conf
+
+////////////////////
+
+-- chequear si funciona la coexion al ad
+kinit usuario@dominio
+
+kvno MSSQLSvc/62afc719bb34.dominio:1433
+
+*si da error, no funciona, cualquier otro resultado es valido
+
+ejemplo resultado: MSSQLSvc/975354f60cb1.dominio:1433@dominio: kvno = 17
+
+//////////////////////////////////////////////////////
+
+-- ahora hay que crear los registro para autenticacion, usando el nuemero que salio en el comando anterior ej: "17"
+-- formato
+-- para todo proceso posterior a la registracion del container en el ad, siempre usar la cuenta de servicio 
+
+addent -password -p MSSQLSvc/**<fully qualified domain name of host machine>**:**<tcp port>**@CONTOSO.COM -k **<kvno from above>** -e aes256-cts-hmac-sha1-96
+addent -password -p MSSQLSvc/**<fully qualified domain name of host machine>**:**<tcp port>**@CONTOSO.COM -k **<kvno from above>** -e rc4-hmac
+addent -password -p MSSQLSvc/**<netbios name of the host machine>**:**<tcp port>**@CONTOSO.COM -k **<kvno from above>** -e aes256-cts-hmac-sha1-96
+addent -password -p MSSQLSvc/**<netbios name of the host machine>**:**<tcp port>**@CONTOSO.COM -k **<kvno from above>** -e rc4-hmac
+
+wkt /var/opt/mssql/secrets/mssql.keytab
+quit
+
+-------------------------
+Ejemplo:
+
+PS: poner la passwor del usuario de servicio
+
+ktutil
+
+addent -password -p MSSQLSvc/62afc719bb34.dominio:1433@dominio -k 17 -e aes256-cts-hmac-sha1-96
+addent -password -p MSSQLSvc/62afc719bb34.dominio:1433@dominio -k 17 -e rc4-hmac
+addent -password -p MSSQLSvc/62afc719bb34:1433@dominio -k 17 -e aes256-cts-hmac-sha1-96
+addent -password -p MSSQLSvc/62afc719bb34:1433@dominio -k 17 -e rc4-hmac
+wkt /var/opt/mssql/secrets/mssql.keytab
+quit
+
+--chequear que se hayan creado los registros
+
+ktutil
+rkt /etc/krb5.keytab
+list
+
+*resultado posible
+
+slot KVNO Principal
+---- ---- ---------------------------------------------------------------------
+   1   17 MSSQLSvc/62afc719bb34.dominio:1433@dominio
+   2    2        host/62afc719bb34.dominio@dominio
+   3    2                host/62AFC719BB34@dominio
+   4    2        host/62afc719bb34.dominio@dominio
+   5    2                host/62AFC719BB34@dominio
+   6    2        host/62afc719bb34.dominio@dominio
+   7    2                host/62AFC719BB34@dominio
+   8    2        host/62afc719bb34.dominio@dominio
+   9    2                host/62AFC719BB34@dominio
+  10    2        host/62afc719bb34.dominio@dominio
+  11    2                host/62AFC719BB34@dominio
+  12    2                    62AFC719BB34$@dominio
+  13    2                    62AFC719BB34$@dominio
+  14    2                    62AFC719BB34$@dominio
+  15    2                    62AFC719BB34$@dominio
+  16    2                    62AFC719BB34$@dominio
+
+/////////////////////////
+* si aparece algun nombre que no corresponde al equipo y/o al AD hay que borrarlo
+/////////////////////////////////////
+
+*en el container por defecto esta crear el sql con usuario de root, si se cambia hayq que cambiar estos parametros
+
+sudo chown root:root /var/opt/mssql/secrets/mssql.keytab
+sudo chmod 775 /var/opt/mssql/secrets/mssql.keytab
+
+ejemplo, con user mssql
+
+sudo chown mssql:mssql /var/opt/mssql/secrets/mssql.keytab
+sudo chmod 555 /var/opt/mssql/secrets/mssql.keytab
+
+
+//////////////////////
+
+--configurar la correcta zona horaria
+-- borar configuracion vieja
+rm -fv /etc/localtime
+
+--crear nueva
+ln -s /usr/share/zoneinfo/America/Argentina/Buenos_Aires /etc/localtime
+
+//////////////////
+
+Configure SQL Server to use this keytab file for Kerberos authentication:
+bash
+
+/opt/mssql/bin/mssql-conf set network.kerberoskeytabfile /var/opt/mssql/secrets/mssql.keytab
+systemctl restart mssql-server
+
+////////////////////////////////////////////////////////////////
+
+--deshabilitar udp si estuviera habilitado, agiliza la velocidad de conexion
+nano /etc/krb5.conf
+
+[libdefaults]
+udp_preference_limit=0
+
+//////////////////////////////////////////////////////
+
+-- crear registro en dns del nombre que se le puso al container, que tiene que ser el mismo de AD y el del motor de sql
+ya que al registrar el container en AD , este no crear automaticamente los registros dns, si estos se fueran a crear, verificar que este con la ip de la maquina que contiene el container y no del container
+
+///////////////////////////////////////////////////
+
+--verificar que sssd este up
+systemctl status sssd
+--chequear si esta en domicio 
+realm list
+
+////////////////////////////////////////////////
+-- conectarse al sql server, con el usuario SA y crear los primeros login de AD
+
+CREATE LOGIN [dominio\user] FROM WINDOWS;
+
+
+
+
+
+

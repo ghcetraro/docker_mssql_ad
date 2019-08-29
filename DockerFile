@@ -1,0 +1,29 @@
+FROM centos:7
+
+LABEL name="microsoft/mssql-server-linux"
+LABEL version="14.0"
+LABEL operating_system="centos:7.6.1810"
+LABEL environment="production"
+LABEL maintainer="yourname@testdomain.com"
+
+ENV container docker
+RUN (cd /lib/systemd/system/sysinit.target.wants/; for i in *; do [ $i == \
+systemd-tmpfiles-setup.service ] || rm -f $i; done); \
+rm -f /lib/systemd/system/multi-user.target.wants/*;\
+rm -f /etc/systemd/system/*.wants/*;\
+rm -f /lib/systemd/system/local-fs.target.wants/*; \
+rm -f /lib/systemd/system/sockets.target.wants/*udev*; \
+rm -f /lib/systemd/system/sockets.target.wants/*initctl*; \
+rm -f /lib/systemd/system/basic.target.wants/*;\
+rm -f /lib/systemd/system/anaconda.target.wants/*;
+
+# Install anything. The service you want to start must be a SystemD service.
+RUN curl -o /etc/yum.repos.d/mssql-server.repo https://packages.microsoft.com/config/rhel/7/mssql-server-2017.repo
+RUN yum install -y mssql-server
+RUN yum install -y nano telnet net-tools realmd krb5-workstation install oddjob oddjob-mkhomedir sssd samba-common samba-common-tools adcli openldap-clients policycoreutils-python
+RUN mkdir -p /var/opt/mssql/data
+RUN chmod -R g=u /var/opt/mssql /etc/passwd
+RUN mkdir -p /data/compartido
+COPY sql.service /etc/systemd/system/
+
+CMD ["/usr/sbin/init"]

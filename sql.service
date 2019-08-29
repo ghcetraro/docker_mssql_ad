@@ -1,0 +1,16 @@
+# ***UnDemonio.service***
+[Unit]
+Description=La descripción del demonio
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/opt/mssql/bin/sqlservr
+User=root
+WorkingDirectory=/opt/mssql/bin
+Restart=on-failure
+StandardOutput=syslog
+StandardError=syslog
+
+[Install]
+WantedBy=multi-user.target
